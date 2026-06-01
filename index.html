@@ -1155,6 +1155,8 @@ async function handleUpload(file) {
       }
       const j = await res.json();
       lbl.textContent = file.name.replace(/\.xlsx?$/i,'').slice(0,22);
+      // Mark this upload as the synced version so the 60s poll doesn't re-pull/revert it.
+      window._lastSyncedAt = j.uploadedAt;
       if (typeof updateSyncBadge === 'function') updateSyncBadge(j.uploadedAt, file.name);
     } catch(syncErr) {
       console.warn('Cloud sync failed:', syncErr);

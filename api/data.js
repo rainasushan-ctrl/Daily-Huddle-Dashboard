@@ -30,7 +30,10 @@ async function readLive() {
   const { blobs } = await list({ prefix: BLOB_KEY });
   if (!blobs.length) return null;
   const latest = blobs.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt))[0];
-  const r = await fetch(latest.url, { cache: 'no-store' });
+  // Cache-bust: Vercel Blob URLs are CDN-cached, and overwriting the same path can serve a
+  // STALE copy. Appending the blob's uploadedAt makes each new upload a fresh URL to the CDN.
+  const bust = (latest.url.includes('?') ? '&' : '?') + 'v=' + encodeURIComponent(latest.uploadedAt || '');
+  const r = await fetch(latest.url + bust, { cache: 'no-store' });
   if (!r.ok) throw new Error('Blob fetch failed: HTTP ' + r.status);
   return r.json();
 }
@@ -115,6 +118,7 @@ export default async function handler(req, res) {
         contentType: 'application/json',
         addRandomSuffix: false,
         allowOverwrite: true,
+        cacheControlMaxAge: 0,   // don't let the CDN cache the live file → reads stay fresh
       });
       return res.status(200).json({
         ok: true,
