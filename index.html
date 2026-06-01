@@ -1657,13 +1657,14 @@ function deltaClass(cur,prev,inv){
   return (inv?(cur<prev):(cur>prev))?"up":"dn";
 }
 function deltaArrow(cur,prev,inv){
-  if(cur===null||prev===null) return "";
+  if(cur===null||prev===null||!prev) return "";   // no arrow without a valid prior baseline (prev 0/null = missing)
   const up=cur>prev; const d=inv?!up:up;
   if(Math.abs(cur-prev)<1e-6) return "";
   return (d?"↑ ":"↓ ");
 }
 function deltaPct(cur,prev){
-  if(!prev) return "";
+  // prior period missing or zero (e.g. SI not yet recorded last month) → not comparable
+  if(prev===null||prev===undefined||prev===0) return "—";
   return ((cur-prev)/Math.abs(prev)*100).toFixed(1)+"%";
 }
 
