@@ -1,0 +1,12 @@
+{
+  "name": "cars24-ops-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CARS24 Leadership Snapshot — static dashboard + Vercel Blob shared storage",
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {
+    "@vercel/blob": "^2.4.0"
+  }
+}
