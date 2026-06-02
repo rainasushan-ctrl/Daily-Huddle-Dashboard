@@ -460,7 +460,7 @@ body{font-family:'Inter',sans-serif;font-weight:400;line-height:1.5;min-height:1
   </div>
 
   <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--ink4);letter-spacing:.06em;margin-bottom:20px;text-transform:uppercase">
-    MTD (May 1–24) vs LMTD (Apr 1–24) · Click a zone to drill into regions
+    MTD vs LMTD · Click a zone to drill in, or tap any region dot on the map for its detail, SI target &amp; root-cause
   </div>
 
   <!-- MAP + PANEL layout -->
@@ -492,6 +492,13 @@ body{font-family:'Inter',sans-serif;font-weight:400;line-height:1.5;min-height:1
 
       <!-- Zone legend -->
       <div id="map-legend" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px"></div>
+      <!-- Region-dot encoding legend -->
+      <div class="map-dot-legend">
+        <span class="ld"><span class="dot" style="background:rgba(45,106,74,0.92)"></span>tokens ↑ vs LMTD</span>
+        <span class="ld"><span class="dot" style="background:rgba(155,43,43,0.92)"></span>tokens ↓</span>
+        <span class="ld"><span class="dot" style="background:rgba(120,116,106,0.85)"></span>no baseline</span>
+        <span class="ld" style="color:var(--ink5)">dot size ∝ SI volume · click to drill</span>
+      </div>
     </div>
 
     <!-- RIGHT: Zone summary panel -->
@@ -513,6 +520,15 @@ body{font-family:'Inter',sans-serif;font-weight:400;line-height:1.5;min-height:1
 .state-poly.has-zone:hover{opacity:.85}
 .state-poly.zone-active{stroke:#1A1915!important;stroke-width:2!important}
 .zone-label-txt{font-family:'JetBrains Mono',monospace;font-size:7px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;fill:rgba(255,255,255,.75);pointer-events:none}
+/* Clickable region dots */
+.region-dot{transition:filter .12s}
+.region-dot:hover circle{stroke:#1A1915;stroke-width:1.7}
+.region-dot:hover{filter:drop-shadow(0 1px 3px rgba(26,25,21,.4))}
+@keyframes regionFlash{0%{box-shadow:0 0 0 0 rgba(193,122,46,.55)}100%{box-shadow:0 0 0 9px rgba(193,122,46,0)}}
+.region-flash{animation:regionFlash 1.6s ease-out;border-color:var(--accent)!important;background:var(--accent-bg)!important}
+.map-dot-legend{display:flex;flex-wrap:wrap;gap:10px 14px;margin-top:10px;font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--ink4);letter-spacing:.04em;align-items:center}
+.map-dot-legend .ld{display:flex;align-items:center;gap:5px}
+.map-dot-legend .dot{width:10px;height:10px;border-radius:50%;border:1px solid #F4F1E8}
 
 /* Zone overview cards */
 .zone-card{
@@ -1717,62 +1733,87 @@ function buildMap(){
   renderZoneLegend();
 }
 
-/* ── Render KPI bubbles on map ── */
+/* ── Render clickable REGION markers on the map ──
+ * One dot per region, clustered within its zone. Size = SI volume,
+ * colour = token momentum vs LMTD (valid baseline). Click → drill to region. */
+const ZONE_DOT_ANCHORS = {
+  "North":{x:190,y:118},"West":{x:74,y:250},"East":{x:356,y:232},
+  "MH & AP":{x:250,y:322},"BLR":{x:150,y:408},"South":{x:250,y:472}
+};
 function renderMapBubbles(){
   const g = document.getElementById("map-bubbles");
   if(!g) return;
   g.innerHTML = "";
 
-  // Zone-level bubbles: show SI delta vs LMTD as colour intensity
-  const ZONE_REGION_CENTERS = {
-    "North":{x:200,y:160},"West":{x:100,y:240},"East":{x:320,y:230},
-    "MH & AP":{x:185,y:315},"BLR":{x:190,y:400},"South":{x:235,y:460}
-  };
-  Object.entries(ZONE_REGION_CENTERS).forEach(([zone, pos])=>{
-    const zd = RCA_DATA.zones[zone];
-    if(!zd) return;
-    const mtdSI = zd.mtd.si, lmtdSI = zd.lmtd.si;
-    const pct = lmtdSI>0?(mtdSI-lmtdSI)/lmtdSI:null;
-    const good = pct!==null && pct>=0;
-    const col = pct===null?"rgba(168,164,154,0.8)":good?"rgba(45,106,74,0.9)":"rgba(155,43,43,0.9)";
+  // Group regions by zone
+  const byZone = {};
+  Object.entries(RCA_DATA.regions).forEach(([code,rd])=>{
+    (byZone[rd.zone] = byZone[rd.zone] || []).push([code,rd]);
+  });
 
-    // Outer ring
-    const ring = document.createElementNS("http://www.w3.org/2000/svg","circle");
-    ring.setAttribute("cx",pos.x); ring.setAttribute("cy",pos.y); ring.setAttribute("r","14");
-    ring.setAttribute("fill","none"); ring.setAttribute("stroke",col); ring.setAttribute("stroke-width","1.5");
-    ring.setAttribute("opacity","0.6");
+  Object.entries(byZone).forEach(([zone, regs])=>{
+    const anchor = ZONE_DOT_ANCHORS[zone] || ZONE_CENTROIDS[zone] || {x:250,y:270};
+    regs.sort((a,b)=>(b[1].mtd.si||0)-(a[1].mtd.si||0)); // biggest first
+    const cols = regs.length<=2 ? regs.length : (regs.length<=6 ? 2 : 3);
+    const rows = Math.ceil(regs.length/cols);
+    const gapX = 31, gapY = 27;
 
-    // Inner circle
-    const c = document.createElementNS("http://www.w3.org/2000/svg","circle");
-    c.setAttribute("cx",pos.x); c.setAttribute("cy",pos.y); c.setAttribute("r","10");
-    c.setAttribute("fill",col);
-    c.setAttribute("cursor","pointer");
-    c.addEventListener("click",()=>selectZone(zone));
+    regs.forEach(([code,rd],i)=>{
+      const m = rd.mtd, l = rd.lmtd;
+      const col = i%cols, row = Math.floor(i/cols);
+      const x = anchor.x + (col-(cols-1)/2)*gapX;
+      const y = anchor.y + (row-(rows-1)/2)*gapY;
+      const si = m.si||0;
+      const r = Math.max(6, Math.min(12, 5 + Math.sqrt(si)/8));
+      // colour by token momentum (tokens have a valid LMTD baseline; SI does not)
+      const tokPct = (l && l.tokens>0) ? (m.tokens-l.tokens)/l.tokens : null;
+      const fill = tokPct===null ? "rgba(120,116,106,0.85)" : tokPct>=0 ? "rgba(45,106,74,0.92)" : "rgba(155,43,43,0.92)";
 
-    // SI value text
-    const tv = document.createElementNS("http://www.w3.org/2000/svg","text");
-    tv.setAttribute("x",pos.x); tv.setAttribute("y",pos.y+1);
-    tv.setAttribute("text-anchor","middle"); tv.setAttribute("dominant-baseline","middle");
-    tv.setAttribute("fill","white"); tv.setAttribute("font-size","6");
-    tv.setAttribute("font-family","JetBrains Mono, monospace"); tv.setAttribute("font-weight","700");
-    tv.setAttribute("pointer-events","none");
-    tv.textContent = mtdSI>=1000?(mtdSI/1000).toFixed(1)+"k":String(mtdSI);
+      const grp = document.createElementNS("http://www.w3.org/2000/svg","g");
+      grp.setAttribute("cursor","pointer");
+      grp.classList.add("region-dot");
+      grp.addEventListener("click",()=>focusRegion(code));
 
-    // Delta text below
-    if(pct!==null){
-      const td = document.createElementNS("http://www.w3.org/2000/svg","text");
-      td.setAttribute("x",pos.x); td.setAttribute("y",pos.y+14);
-      td.setAttribute("text-anchor","middle");
-      td.setAttribute("fill",good?"#5dba88":"#e07070");
-      td.setAttribute("font-size","5.5"); td.setAttribute("font-family","JetBrains Mono,monospace");
-      td.setAttribute("font-weight","700"); td.setAttribute("pointer-events","none");
-      td.textContent = (good?"+":"")+((pct||0)*100).toFixed(0)+"%";
-      g.appendChild(td);
-    }
+      const circle = document.createElementNS("http://www.w3.org/2000/svg","circle");
+      circle.setAttribute("cx",x); circle.setAttribute("cy",y); circle.setAttribute("r",r.toFixed(1));
+      circle.setAttribute("fill",fill); circle.setAttribute("stroke","#F4F1E8"); circle.setAttribute("stroke-width","1.2");
+      const title = document.createElementNS("http://www.w3.org/2000/svg","title");
+      title.textContent = `${REGION_NAMES[code]||code} (${code}) · SI ${si.toLocaleString('en-IN')}`
+        + (tokPct!==null ? ` · tokens ${tokPct>=0?'+':''}${(tokPct*100).toFixed(0)}%` : '');
+      circle.appendChild(title);
 
-    g.appendChild(ring); g.appendChild(c); g.appendChild(tv);
+      const label = document.createElementNS("http://www.w3.org/2000/svg","text");
+      label.setAttribute("x",x); label.setAttribute("y",y+0.5);
+      label.setAttribute("text-anchor","middle"); label.setAttribute("dominant-baseline","middle");
+      label.setAttribute("fill","#fff"); label.setAttribute("font-size","4.8");
+      label.setAttribute("font-family","JetBrains Mono,monospace"); label.setAttribute("font-weight","700");
+      label.setAttribute("letter-spacing","0.2"); label.setAttribute("pointer-events","none");
+      label.textContent = code;
+
+      grp.appendChild(circle); grp.appendChild(label);
+      g.appendChild(grp);
+    });
   });
 }
+
+/* Drill into a region: open its zone, then scroll to + flash its card. */
+function focusRegion(code){
+  const rd = RCA_DATA.regions[code]; if(!rd) return;
+  (window.selectZone||selectZone)(rd.zone);
+  setTimeout(()=>{
+    const drill = document.getElementById('rca-drilldown');
+    if(!drill) return;
+    drill.querySelectorAll('.region-card').forEach(card=>{
+      const c = card.querySelector('.region-code')?.textContent?.trim();
+      if(c===code){
+        card.scrollIntoView({behavior:'smooth', block:'center'});
+        card.classList.add('region-flash');
+        setTimeout(()=>card.classList.remove('region-flash'), 1700);
+      }
+    });
+  }, 90);
+}
+window.focusRegion = focusRegion;
 
 function renderZoneLegend(){
   const el = document.getElementById("map-legend");
@@ -1854,7 +1895,7 @@ function buildSITable(regs) {
     const t2siPct = l.t2si>0 ? (m.t2si-l.t2si)/l.t2si : null;
     const t2siGood = t2siPct===null || t2siPct >= -0.05;
 
-    return `<tr style="border-bottom:1px solid var(--rule3)">
+    return `<tr style="border-bottom:1px solid var(--rule3);cursor:pointer" onclick="focusRegion('${code}')" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''" title="Open ${REGION_NAMES[code]||code} detail">
       <td style="padding:8px 10px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;color:var(--ink2);white-space:nowrap">
         <span style="font-family:'JetBrains Mono',monospace;font-size:8px;background:var(--surface2);border:1px solid var(--rule);border-radius:2px;padding:1px 6px;margin-right:4px">${code}</span>
         ${REGION_NAMES[code]||code}
@@ -2114,7 +2155,7 @@ function selectZone(zone){
     <!-- Zone aggregate -->
     <div style="background:var(--surface);border:1px solid var(--rule2);border-radius:var(--r);padding:14px 16px;margin-bottom:16px;border-left:4px solid ${col}">
       <div style="font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ink4);margin-bottom:10px">Zone Total</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+      <div class="zone-total-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
         ${[
           ["Tokens",  fmtN(zd.mtd.tokens), fmtN(zd.lmtd.tokens), deltaClass(zd.mtd.tokens,zd.lmtd.tokens,false), deltaArrow(zd.mtd.tokens,zd.lmtd.tokens,false)+deltaPct(zd.mtd.tokens,zd.lmtd.tokens)],
           ["SIs",     fmtN(zd.mtd.si),     fmtN(zd.lmtd.si),     deltaClass(zd.mtd.si,zd.lmtd.si,false),         deltaArrow(zd.mtd.si,zd.lmtd.si,false)+deltaPct(zd.mtd.si,zd.lmtd.si)],
@@ -2252,6 +2293,42 @@ renderZoneOverview();
 .v2-reset{font-family:'JetBrains Mono',monospace;font-size:8.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink4);background:transparent;border:1px solid var(--rule2);border-radius:var(--r-sm);padding:3px 8px;cursor:pointer;margin-left:8px}
 .v2-reset:hover{color:var(--ink);border-color:var(--ink3)}
 
+/* Goal-seek planner */
+.v2-gs{display:grid;grid-template-columns:300px 1fr;gap:22px;align-items:start}
+.v2-gs-lbl{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink4)}
+.v2-gs-field{width:100%;font-family:'Fraunces',serif;font-size:32px;font-weight:300;letter-spacing:-.02em;color:var(--accent);background:var(--accent-bg);border:1px solid var(--rule2);border-left:3px solid var(--accent);border-radius:var(--r);padding:8px 12px;margin:7px 0 10px;outline:none;-moz-appearance:textfield}
+.v2-gs-field:focus{border-color:var(--accent)}
+.v2-gs-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.v2-gs-chips button{font-family:'JetBrains Mono',monospace;font-size:8.5px;font-weight:700;letter-spacing:.04em;color:var(--ink3);background:var(--surface2);border:1px solid var(--rule2);border-radius:var(--r-sm);padding:4px 9px;cursor:pointer;transition:background .1s,color .1s}
+.v2-gs-chips button:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.v2-gs-gap{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--ink3);padding:6px 0}
+.v2-gs-levers{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.v2-gs-lever{background:var(--surface2);border:1px solid var(--rule2);border-left:3px solid var(--accent);border-radius:var(--r);padding:14px 16px}
+.v2-gs-lever-eye{font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--ink5);margin-bottom:9px}
+.v2-gs-lever-num{font-family:'Fraunces',serif;font-size:27px;font-weight:300;letter-spacing:-.02em;color:var(--ink);line-height:1;font-optical-sizing:auto}
+.v2-gs-lever-lbl{font-family:'JetBrains Mono',monospace;font-size:8.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink4);margin-top:3px}
+.v2-gs-lever-sub{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ink3);margin-top:9px}
+
+/* Region goal-seek + regional RCA (zone drilldown) */
+.v2-region-planner{margin-top:12px;padding:12px 14px;background:var(--surface2);border:1px solid var(--rule);border-radius:var(--r-sm)}
+.v2-region-rca{margin-bottom:12px;padding-bottom:11px;border-bottom:1px dashed var(--rule2)}
+.v2-rca-eye{font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ink4);margin-bottom:7px}
+.v2-rca-line{display:flex;gap:7px;align-items:flex-start;font-family:'Inter',system-ui,sans-serif;font-size:10.5px;line-height:1.45;color:var(--ink2);padding:3px 0}
+.v2-rca-ic{flex-shrink:0}
+.v2-rca-line.bad .v2-rca-ic{color:var(--bad)}.v2-rca-line.warn .v2-rca-ic{color:var(--warn)}.v2-rca-line.good .v2-rca-ic{color:var(--good)}
+.v2-rgs-head{font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ink4);margin-bottom:9px;display:flex;justify-content:space-between;align-items:center}
+.v2-rgs{display:grid;grid-template-columns:155px 1fr;gap:14px;align-items:center}
+.v2-rgs-field{width:100%;font-family:'Fraunces',serif;font-size:20px;font-weight:300;color:var(--accent);background:var(--surface);border:1px solid var(--rule2);border-left:3px solid var(--accent);border-radius:var(--r-sm);padding:5px 8px;outline:none;-moz-appearance:textfield}
+.v2-rgs-chips{display:flex;gap:4px;margin:6px 0 4px;flex-wrap:wrap}
+.v2-rgs-chips button{font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;color:var(--ink3);background:var(--surface);border:1px solid var(--rule2);border-radius:var(--r-sm);padding:3px 7px;cursor:pointer}
+.v2-rgs-chips button:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.v2-rgs-gap{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--ink3)}
+.v2-rgs-out{display:flex;flex-direction:column;gap:6px}
+.v2-rgs-lev{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:6px 9px;background:var(--surface);border:1px solid var(--rule3);border-radius:var(--r-sm)}
+.v2-rgs-k{color:var(--ink4);text-transform:uppercase;font-size:8px;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}
+.v2-rgs-v{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:var(--ink3)}
+.v2-rgs-v b{font-family:'Fraunces',serif;font-size:15px;font-weight:400;color:var(--ink)}
+
 /* AI exec summary */
 .v2-ai-bar{display:flex;align-items:center;gap:10px;padding:11px 14px;background:var(--surface);border:1px solid var(--rule);border-radius:var(--r);margin-top:14px}
 .v2-ai-btn{font-family:'JetBrains Mono',monospace;font-size:9.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:6px 14px;background:var(--ink);color:var(--surface);border:none;border-radius:var(--r-sm);cursor:pointer;white-space:nowrap}
@@ -2262,6 +2339,54 @@ renderZoneOverview();
 .v2-ai-out{margin-top:12px;padding:14px 16px;background:var(--surface2);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:var(--r);font-family:'Inter',sans-serif;font-size:12.5px;line-height:1.65;color:var(--ink2);white-space:pre-wrap;display:none}
 .v2-ai-out.show{display:block}
 .v2-ai-hint{font-family:'JetBrains Mono',monospace;font-size:8.5px;color:var(--ink5);letter-spacing:.04em}
+
+/* ════════════ MOBILE / RESPONSIVE ════════════ */
+@media(max-width:820px){
+  /* Topbar wraps instead of overflowing */
+  .topbar{height:auto;min-height:48px;flex-wrap:wrap;padding:8px 16px;gap:8px 10px}
+  .topbar-right{margin-left:auto;flex-wrap:wrap;gap:6px;width:100%;justify-content:flex-end}
+  .topbar-section{display:none}
+  .data-banner,#data-banner{padding-left:16px!important;padding-right:16px!important}
+  /* Section headings */
+  .eyebrow-title{font-size:21px}
+  .section-eyebrow{gap:10px;flex-wrap:wrap}
+  /* Planners stack */
+  .v2-gs{grid-template-columns:1fr;gap:16px}
+  .v2-gs-levers{grid-template-columns:1fr 1fr}
+  .v2-rgs{grid-template-columns:1fr;gap:10px}
+  /* Zone deep-dive: map over panel, stacked (override inline grid) */
+  #rca-layout{grid-template-columns:1fr!important}
+  #rca-map-wrap{position:static!important}
+  /* Pace KPI bar stacks (override inline grid) */
+  #pace-kpi-bar{grid-template-columns:1fr!important}
+  #pace-kpi-bar>div{border-right:none!important;border-bottom:1px solid var(--rule2)}
+  /* Zone / drill metric grids */
+  .zone-metrics{grid-template-columns:repeat(3,1fr)}
+  .zone-total-grid{grid-template-columns:repeat(2,1fr)!important}
+  .drill-metrics{grid-template-columns:repeat(2,1fr)}
+  /* AI bar + modal */
+  .v2-ai-bar{flex-wrap:wrap}
+  .v2-ai-key{flex:1 1 100%;order:3}
+  .v2-overlay{padding:16px 10px}
+  .v2-modal{padding:18px 16px}
+  .v2-cmp-table{display:block;overflow-x:auto;white-space:nowrap}
+}
+@media(max-width:520px){
+  .page{padding:16px 12px 56px}
+  .eyebrow-title{font-size:18px}
+  /* Single-column metric stacks on small phones */
+  .v2-gs-levers{grid-template-columns:1fr}
+  .zone-metrics{grid-template-columns:repeat(2,1fr)}
+  .zone-total-grid{grid-template-columns:repeat(2,1fr)!important}
+  /* Leader chips scroll horizontally instead of wrapping tall */
+  .leader-strip{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .leader-strip-label{position:sticky;left:0}
+  /* Context bar: hide lower-priority items to save height */
+  .context-bar .ctx-item:nth-child(n+4){display:none}
+  /* Date/view controls shrink */
+  .view-btn{padding:5px 11px}
+  .topbar-brand{font-size:9px}
+}
 </style>
 
 <!-- Compare overlay -->
@@ -2518,57 +2643,73 @@ function renderPlanner(){
   const tokCur  = cur.tokens||0;
   const t2siLMTD = noBaseline ? null : (prev?.t2si||0);
   const tokLMTD  = noBaseline ? null : (prev?.tokens||0);
-  const t2siMax = Math.max(0.95, (t2siLMTD||0)*1.1, t2siCur*1.1);
-  const tokMax  = Math.max(Math.round((tokLMTD||0)*1.3), Math.round(tokCur*1.5), 100);
-  // Target: prefer LMTD×1.10; fall back to current MTD ×1.10 with clear label
-  const targetSI = noBaseline ? Math.round(cur.si*1.10) : Math.round(prev.si*1.10);
+  // Default target: prefer LMTD×1.10; fall back to current MTD ×1.10 with clear label
+  const defaultTarget = noBaseline ? Math.round((cur.si||0)*1.10) : Math.round(prev.si*1.10);
   const targetLabel = noBaseline ? 'current ×1.10 · no Apr baseline' : 'LMTD ×1.10';
+  const curSI = Math.round(cur.si||0);
   host.innerHTML = `
     <div class="v2-planner-head">
-      <span class="v2-planner-eye">§ 01 · WHAT-IF</span>
+      <span class="v2-planner-eye">§ 01 · GOAL-SEEK</span>
       <span class="v2-planner-title">SI <em>planner</em></span>
-      <span class="v2-planner-meta">${leaderName} · MTD · target ${targetSI.toLocaleString('en-IN')} SIs (${targetLabel})
+      <span class="v2-planner-meta">${leaderName} · MTD · current ${curSI.toLocaleString('en-IN')} SIs
         <button class="v2-reset" onclick="v2ResetPlanner()">Reset</button>
       </span>
     </div>
-    ${noBaseline ? `<div style="margin-bottom:14px;padding:9px 12px;background:var(--warn-bg);border:1px solid var(--warn-rule);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--warn);letter-spacing:.03em">⚠ LMTD baseline missing in source — target is set at <b>current MTD × 1.10</b>. Drag sliders to see what T2SI / token combination reaches it.</div>` : ''}
-    <div class="v2-planner-grid">
-      <div>
-        <div class="v2-slider-row">
-          <div class="v2-slider-label"><span>T2SI</span><b id="v2-t2si-val">${(t2siCur*100).toFixed(1)}%</b></div>
-          <input type="range" id="v2-t2si-slider" class="v2-slider" min="0" max="${(t2siMax*1000).toFixed(0)}" step="1" value="${(t2siCur*1000).toFixed(0)}">
-          <div class="v2-slider-min-max"><span>0%</span><span>current ${(t2siCur*100).toFixed(1)}% · LMTD ${t2siLMTD!=null?((t2siLMTD*100).toFixed(1)+'%'):'—'}</span><span>${(t2siMax*100).toFixed(0)}%</span></div>
+    ${noBaseline ? `<div style="margin-bottom:14px;padding:9px 12px;background:var(--warn-bg);border:1px solid var(--warn-rule);border-radius:var(--r-sm);font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--warn);letter-spacing:.03em">⚠ LMTD baseline missing in source — default target is <b>current MTD × 1.10</b>. Set your own SI target and the tokens / T2SI needed update automatically.</div>` : ''}
+    <div class="v2-gs">
+      <div class="v2-gs-input">
+        <div class="v2-gs-lbl">Set your SI target</div>
+        <input type="number" id="v2-gs-target" class="v2-gs-field" value="${defaultTarget}" min="0" step="50">
+        <div class="v2-gs-chips">
+          <button onclick="v2SetTarget(${defaultTarget})">${noBaseline?'Current':'LMTD'} ×1.10</button>
+          <button onclick="v2SetTarget(${Math.round(curSI*1.10)})">+10%</button>
+          <button onclick="v2SetTarget(${Math.round(curSI*1.20)})">+20%</button>
+          <button onclick="v2SetTarget(${curSI})">Current</button>
         </div>
-        <div class="v2-slider-row">
-          <div class="v2-slider-label"><span>Tokens (PRs)</span><b id="v2-tok-val">${tokCur.toLocaleString('en-IN')}</b></div>
-          <input type="range" id="v2-tok-slider" class="v2-slider" min="0" max="${tokMax}" step="1" value="${tokCur}">
-          <div class="v2-slider-min-max"><span>0</span><span>current ${tokCur.toLocaleString('en-IN')} · LMTD ${tokLMTD!=null?tokLMTD.toLocaleString('en-IN'):'—'}</span><span>${tokMax.toLocaleString('en-IN')}</span></div>
-        </div>
+        <div class="v2-gs-gap" id="v2-gs-gap">—</div>
       </div>
-      <div>
-        <div class="v2-result-lbl">Projected SIs</div>
-        <div class="v2-result"><div class="v2-result-num" id="v2-projected">—</div>
-          <div class="v2-result-sub" id="v2-vs-target">—</div>
-          <div class="v2-result-sub" id="v2-vs-actual">—</div>
+      <div class="v2-gs-levers">
+        <div class="v2-gs-lever">
+          <div class="v2-gs-lever-eye">Lever A · hold T2SI ${(t2siCur*100).toFixed(1)}%</div>
+          <div class="v2-gs-lever-num" id="v2-gs-tokneed">—</div>
+          <div class="v2-gs-lever-lbl">tokens (PRs) needed</div>
+          <div class="v2-gs-lever-sub" id="v2-gs-tokdelta">—</div>
+        </div>
+        <div class="v2-gs-lever">
+          <div class="v2-gs-lever-eye">Lever B · hold tokens ${tokCur.toLocaleString('en-IN')}</div>
+          <div class="v2-gs-lever-num" id="v2-gs-t2sineed">—</div>
+          <div class="v2-gs-lever-lbl">T2SI needed</div>
+          <div class="v2-gs-lever-sub" id="v2-gs-t2sidelta">—</div>
         </div>
       </div>
     </div>`;
-  /* wire sliders */
-  const t2siS = $('#v2-t2si-slider'), tokS = $('#v2-tok-slider');
+  /* wire single target input → solve for the two levers */
+  const field = $('#v2-gs-target');
   function update(){
-    const t2 = parseFloat(t2siS.value)/1000;
-    const tk = parseInt(tokS.value,10);
-    const projected = Math.round(t2*tk);
-    $('#v2-t2si-val').textContent = (t2*100).toFixed(1)+'%';
-    $('#v2-tok-val').textContent  = tk.toLocaleString('en-IN');
-    $('#v2-projected').textContent = projected.toLocaleString('en-IN');
-    const dTarget = projected - targetSI;
-    const dActual = projected - (cur.si||0);
-    $('#v2-vs-target').innerHTML = `vs target <b>${dTarget>=0?'+':''}${dTarget.toLocaleString('en-IN')}</b> SIs (${targetSI?((dTarget/targetSI)*100).toFixed(1):'—'}%)`;
-    $('#v2-vs-actual').innerHTML = `vs current MTD <b>${(cur.si||0).toLocaleString('en-IN')}</b> · ${dActual>=0?'+':''}${dActual.toLocaleString('en-IN')} SIs`;
+    const target = Math.max(0, parseInt(field.value,10)||0);
+    const gap = target - curSI;
+    $('#v2-gs-gap').innerHTML = gap>0
+      ? `Gap: <b style="color:var(--bad)">+${gap.toLocaleString('en-IN')}</b> SIs to find`
+      : `<b style="color:var(--good)">✓ Target met</b> · ${Math.abs(gap).toLocaleString('en-IN')} SIs above`;
+    // Lever A — hold T2SI, solve tokens needed
+    if (t2siCur>0){
+      const tokNeed = Math.ceil(target / t2siCur);
+      const dTok = tokNeed - tokCur;
+      $('#v2-gs-tokneed').textContent = tokNeed.toLocaleString('en-IN');
+      $('#v2-gs-tokdelta').innerHTML = `<b style="color:${dTok>0?'var(--bad)':'var(--good)'}">${dTok>=0?'+':''}${dTok.toLocaleString('en-IN')}</b> vs current${tokCur>0?` (${dTok>=0?'+':''}${(dTok/tokCur*100).toFixed(1)}%)`:''}`;
+    } else { $('#v2-gs-tokneed').textContent='—'; $('#v2-gs-tokdelta').textContent='needs T2SI > 0'; }
+    // Lever B — hold tokens, solve T2SI needed
+    if (tokCur>0){
+      const t2Need = target / tokCur;
+      const dPP = (t2Need - t2siCur)*100;
+      $('#v2-gs-t2sineed').textContent = (t2Need*100).toFixed(1)+'%';
+      $('#v2-gs-t2sidelta').innerHTML = t2Need>1
+        ? `<b style="color:var(--bad)">exceeds 100%</b> — raise tokens too`
+        : `<b style="color:${dPP>0?'var(--bad)':'var(--good)'}">${dPP>=0?'+':''}${dPP.toFixed(1)} pp</b> vs current`;
+    } else { $('#v2-gs-t2sineed').textContent='—'; $('#v2-gs-t2sidelta').textContent='needs tokens > 0'; }
   }
-  t2siS.addEventListener('input',update);
-  tokS.addEventListener('input',update);
+  field.addEventListener('input',update);
+  window.v2SetTarget = function(v){ field.value = v; update(); };
   update();
 }
 window.v2ResetPlanner = function(){
@@ -2691,63 +2832,71 @@ function injectRegionSliders(){
     const rd = RCA_DATA.regions[code]; if(!rd) return;
     const m = rd.mtd, l = rd.lmtd;
     const noBaseline = !l || !l.si || l.si === 0;
-    const t2siCur = m.t2si||0, tokCur = m.tokens||0;
-    const t2siLMTD = noBaseline ? null : (l.t2si||0);
-    const tokLMTD  = noBaseline ? null : (l.tokens||0);
-    const t2siMax = Math.max(0.95, (t2siLMTD||0)*1.1, t2siCur*1.1);
-    const tokMax  = Math.max(Math.round((tokLMTD||0)*1.3), Math.round(tokCur*1.5), 50);
-    const targetSI = noBaseline ? Math.round((m.si||0)*1.10) : Math.round(l.si*1.10);
-    const targetLabel = noBaseline ? 'current ×1.10 · no LMTD' : 'LMTD ×1.10';
+    const t2siCur = m.t2si||0, tokCur = m.tokens||0, curSI = Math.round(m.si||0);
+    const defaultTarget = noBaseline ? Math.round(curSI*1.10) : Math.round(l.si*1.10);
+    const regionName = REGION_NAMES[code]||code;
+
+    // ── Regional RCA (reuses the same engine as the headline RCA) ──
+    let rcaHTML = '';
+    try {
+      const calls = generateRCA(m, l, !noBaseline, regionName, 'mtd', 'LMTD');
+      if (calls && calls.length){
+        rcaHTML = `<div class="v2-region-rca">
+          <div class="v2-rca-eye">⟐ ${regionName} · regional root-cause</div>
+          ${calls.slice(0,4).map(c=>`<div class="v2-rca-line ${c.type}"><span class="v2-rca-ic">${c.icon}</span><span>${c.text}</span></div>`).join('')}
+        </div>`;
+      }
+    } catch(e){ /* RCA is best-effort */ }
+
     const wrap = document.createElement('div');
     wrap.className = 'v2-region-planner';
-    wrap.style.cssText = 'margin-top:12px;padding:11px 13px;background:var(--surface2);border:1px solid var(--rule);border-radius:var(--r-sm)';
-    wrap.innerHTML = `
-      <div style="font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ink4);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
-        <span>💡 What-if · target ${targetSI.toLocaleString('en-IN')} SIs (${targetLabel})</span>
-        <button class="v2-reset" onclick="this.closest('.v2-region-planner').dataset.reset='1';v2ResetRegion(this.closest('.v2-region-planner'),'${code}')">Reset</button>
+    wrap.innerHTML = rcaHTML + `
+      <div class="v2-rgs-head">
+        <span>🎯 Individual SI target — goal-seek</span>
+        <button class="v2-reset" onclick="v2ResetRegion(this.closest('.v2-region-planner'),'${code}')">Reset</button>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 130px;gap:14px;align-items:center">
-        <div>
-          <div class="v2-slider-label" style="font-size:8.5px"><span>T2SI</span><b class="v2-rt2v" style="font-size:13px">${(t2siCur*100).toFixed(1)}%</b></div>
-          <input type="range" class="v2-slider v2-rt2s" min="0" max="${(t2siMax*1000).toFixed(0)}" step="1" value="${(t2siCur*1000).toFixed(0)}">
-          <div class="v2-slider-min-max"><span>0%</span><span>cur · LMTD ${t2siLMTD!=null?((t2siLMTD*100).toFixed(1)+'%'):'—'}</span><span>${(t2siMax*100).toFixed(0)}%</span></div>
+      <div class="v2-rgs">
+        <div class="v2-rgs-in">
+          <input type="number" class="v2-rgs-field v2-rtarget" value="${defaultTarget}" min="0" step="25">
+          <div class="v2-rgs-chips">
+            <button data-t="${defaultTarget}">${noBaseline?'cur':'LMTD'}×1.1</button>
+            <button data-t="${Math.round(curSI*1.10)}">+10%</button>
+            <button data-t="${curSI}">cur</button>
+          </div>
+          <div class="v2-rgs-gap v2-rgap">—</div>
         </div>
-        <div>
-          <div class="v2-slider-label" style="font-size:8.5px"><span>Tokens</span><b class="v2-rtkv" style="font-size:13px">${tokCur.toLocaleString('en-IN')}</b></div>
-          <input type="range" class="v2-slider v2-rtks" min="0" max="${tokMax}" step="1" value="${tokCur}">
-          <div class="v2-slider-min-max"><span>0</span><span>cur · LMTD ${tokLMTD!=null?tokLMTD.toLocaleString('en-IN'):'—'}</span><span>${tokMax.toLocaleString('en-IN')}</span></div>
-        </div>
-        <div style="text-align:right">
-          <div style="font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--ink4);letter-spacing:.06em;text-transform:uppercase">Projected SIs</div>
-          <div class="v2-rproj" style="font-family:'Fraunces',serif;font-size:22px;font-weight:300;color:var(--accent);line-height:1.1">${Math.round(t2siCur*tokCur).toLocaleString('en-IN')}</div>
-          <div class="v2-rvs" style="font-family:'JetBrains Mono',monospace;font-size:8.5px;color:var(--ink3);margin-top:2px">vs target —</div>
+        <div class="v2-rgs-out">
+          <div class="v2-rgs-lev"><span class="v2-rgs-k">Hold T2SI ${(t2siCur*100).toFixed(1)}%</span><span class="v2-rgs-v"><b class="v2-rtok">—</b> tokens <span class="v2-rtokd"></span></span></div>
+          <div class="v2-rgs-lev"><span class="v2-rgs-k">Hold tokens ${tokCur.toLocaleString('en-IN')}</span><span class="v2-rgs-v"><b class="v2-rt2">—</b> T2SI <span class="v2-rt2d"></span></span></div>
         </div>
       </div>`;
     card.appendChild(wrap);
-    const t2s = wrap.querySelector('.v2-rt2s'), tks = wrap.querySelector('.v2-rtks');
-    const t2v = wrap.querySelector('.v2-rt2v'), tkv = wrap.querySelector('.v2-rtkv');
-    const proj = wrap.querySelector('.v2-rproj'), vs = wrap.querySelector('.v2-rvs');
+    const field = wrap.querySelector('.v2-rtarget');
+    const gapEl = wrap.querySelector('.v2-rgap');
+    const tokEl = wrap.querySelector('.v2-rtok'), tokdEl = wrap.querySelector('.v2-rtokd');
+    const t2El = wrap.querySelector('.v2-rt2'), t2dEl = wrap.querySelector('.v2-rt2d');
     function upd(){
-      const t2 = parseFloat(t2s.value)/1000;
-      const tk = parseInt(tks.value,10);
-      const p = Math.round(t2*tk);
-      t2v.textContent = (t2*100).toFixed(1)+'%';
-      tkv.textContent = tk.toLocaleString('en-IN');
-      proj.textContent = p.toLocaleString('en-IN');
-      const d = p - targetSI;
-      vs.innerHTML = `vs target <b style="color:${d>=0?'var(--good)':'var(--bad)'}">${d>=0?'+':''}${d.toLocaleString('en-IN')}</b>`;
+      const target = Math.max(0, parseInt(field.value,10)||0);
+      const gap = target - curSI;
+      gapEl.innerHTML = gap>0 ? `gap to target <b style="color:var(--bad)">+${gap.toLocaleString('en-IN')}</b> SIs` : `<b style="color:var(--good)">✓ target met</b>`;
+      if (t2siCur>0){ const tn=Math.ceil(target/t2siCur), d=tn-tokCur; tokEl.textContent=tn.toLocaleString('en-IN'); tokdEl.innerHTML=`<b style="color:${d>0?'var(--bad)':'var(--good)'}">${d>=0?'+':''}${d.toLocaleString('en-IN')}</b>`; }
+      else { tokEl.textContent='—'; tokdEl.textContent=''; }
+      if (tokCur>0){ const tn=target/tokCur, dpp=(tn-t2siCur)*100; t2El.textContent=(tn*100).toFixed(1)+'%'; t2dEl.innerHTML= tn>1?`<b style="color:var(--bad)">&gt;100% · raise tokens</b>`:`<b style="color:${dpp>0?'var(--bad)':'var(--good)'}">${dpp>=0?'+':''}${dpp.toFixed(1)}pp</b>`; }
+      else { t2El.textContent='—'; t2dEl.textContent=''; }
     }
-    t2s.addEventListener('input',upd);
-    tks.addEventListener('input',upd);
+    field.addEventListener('input',upd);
+    wrap.querySelectorAll('.v2-rgs-chips button').forEach(b=>b.addEventListener('click',()=>{ field.value=b.dataset.t; upd(); }));
     upd();
   });
 }
 window.v2ResetRegion = function(wrap,code){
   const rd = RCA_DATA.regions[code]; if(!rd) return;
-  const t2s = wrap.querySelector('.v2-rt2s'), tks = wrap.querySelector('.v2-rtks');
-  t2s.value = (rd.mtd.t2si||0)*1000;
-  tks.value = (rd.mtd.tokens||0);
-  t2s.dispatchEvent(new Event('input'));
+  const m=rd.mtd, l=rd.lmtd;
+  const noBaseline = !l || !l.si || l.si===0;
+  const field = wrap.querySelector('.v2-rtarget');
+  if(!field) return;
+  field.value = noBaseline ? Math.round((m.si||0)*1.10) : Math.round(l.si*1.10);
+  field.dispatchEvent(new Event('input'));
 };
 
 /* ═══════════════════════════════════════════════
